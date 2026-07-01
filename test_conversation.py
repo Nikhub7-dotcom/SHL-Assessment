@@ -27,13 +27,13 @@ conversations = [
         ]
     },
     {
-        "name": "C3 - Contact centre agents",
+        "name": "C3 - AI Research Intern",
         "turns": [
-            "We're screening 500 entry-level contact centre agents. Inbound calls, customer service focus. What should we use?",
-            "English.",
-            "US.",
-            "Is the Contact Center Call Simulation different from the Customer Service Phone Simulation?",
-            "Perfect — new simulation for volume, old solution for finalists. Confirmed.",
+            "I am hiring an AI research intern for our ML team.",
+            "Fresh graduate, no experience required. They will work on NLP and computer vision projects.",
+            "Yes add a personality test as well.",
+            "What is the difference between the Global Skills Assessment and the AI Skills assessment?",
+            "Perfect, that's what we need. Thanks.",
         ]
     },
 ]
@@ -78,4 +78,4 @@ for convo in conversations:
             print(f"ERROR: {e}")
             break
 
-        time.sleep(5)
+        time.sleep(15)
