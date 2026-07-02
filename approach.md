@@ -2,54 +2,61 @@
 
 ## Problem & Design Choices
 
-The task was to build a conversational agent that takes a hiring manager from a vague intent to a grounded shortlist of SHL assessments. The core challenge is that hiring managers often don't know the right assessment vocabulary, so keyword search fails them. A conversational agent that clarifies, recommends, refines, and compares solves this.
+Hiring managers usually don't know what assessment they need until they describe the role out loud. Keyword search doesn't help here — you need to already know what you're looking for. So I built a conversational agent that takes a vague hiring intent and narrows it down to a shortlist through dialogue.
 
-**Architecture:**
-- FastAPI for the stateless REST API (lightweight, fast, auto-docs via Swagger)
-- FAISS + sentence-transformers (all-MiniLM-L6-v2) for semantic retrieval over the catalog
-- Groq (llama-3.3-70b-versatile) for generating grounded, structured replies
-- The index is pre-built once at deploy time and loaded into memory at startup
+Stack I chose:
+- **FastAPI** — lightweight, fast, and gives you Swagger docs for free which made testing easy
+- **FAISS + sentence-transformers (all-MiniLM-L6-v2)** — semantic search over the catalog so "Java developer" retrieves Java tests even if the word "Java" isn't in the assessment name
+- **Groq (llama-3.3-70b-versatile)** — free, fast, and the 70B model was reliable enough to follow JSON instructions consistently
+- **Deployed on Hugging Face Spaces** using Docker SDK — 2GB RAM on free tier, enough to run PyTorch and FAISS comfortably
 
-The API is fully stateless — every POST /chat carries the full conversation history. The server stores nothing per conversation, which makes it horizontally scalable and easy to deploy on free-tier hosting.
+The API is fully stateless. Every POST /chat carries the full conversation history and the server stores nothing. This was a requirement from the spec and it also made deployment much simpler.
 
 ## Retrieval Setup
 
-Each catalog item is converted into a descriptive text string combining its name, description, category keys, and job levels. These are encoded into 384-dimensional vectors using all-MiniLM-L6-v2 and stored in a FAISS IndexFlatL2 index (exact search, appropriate for ~400 items).
+For each assessment in the catalog, I built one descriptive text string combining the name, description, category keys, and job levels. These get encoded into 384-dimensional vectors using all-MiniLM-L6-v2 and stored in a FAISS IndexFlatL2 index. The index is built once at deploy time and loaded into memory at startup.
 
-At query time, we combine the last user message with the full conversation history into a single retrieval query. This ensures that context from earlier turns (e.g. "mid-level" mentioned two turns ago) still influences which assessments are retrieved. The top 15 results are injected into the LLM's system prompt as a CATALOG CONTEXT block.
-
-This approach grounds the LLM strictly in real catalog data — it can only recommend what it has seen in the context block, which prevents hallucination of non-existent assessments.
+At query time, I combine the last user message with the full conversation history into one retrieval query. This matters because if the user said "mid-level" two turns ago, that context should still influence what gets retrieved now. Top 15 results get injected into the LLM's system prompt as a CATALOG CONTEXT block — the LLM can only recommend from what it sees there.
 
 ## Prompt Design
 
 The system prompt has three parts:
 
-1. **Rules** — explicit behavioral instructions covering when to clarify, when to recommend, when to refuse, and how to handle refinement and comparison
-2. **Few-shot examples** — six concrete examples derived from the provided sample conversations showing exactly what correct JSON output looks like for each scenario (vague query, role given, refinement, confirmation, comparison, off-topic)
-3. **Catalog context** — the 15 retrieved assessments injected fresh on every call
+1. **Rules** — when to clarify, when to recommend, when to refuse, how to handle refinement and comparison. I also added explicit turn pressure at turn 6 to force a recommendation before hitting the 8-turn evaluator cap.
+2. **Few-shot examples** — 6 examples covering all required behaviors: vague query, role given, refinement, confirmation, comparison, off-topic refusal. These were derived from the sample conversation traces and made a bigger difference than the rules alone.
+3. **Catalog context** — the 15 retrieved assessments, injected fresh on every call.
 
-The output is constrained to a strict JSON schema with three fields: `reply`, `recommendations`, and `end_of_conversation`. The few-shot examples teach the model the schema better than instructions alone.
+## Agent Design Decisions
+
+A few specific things I added after reading the PDF carefully:
+
+- **Vague query detection** — if the first message has no specific role in it, the agent asks one clarifying question instead of recommending
+- **Comparison detection** — when the user asks to compare two assessments, I retrieve their full descriptions and inject them separately so the answer is grounded in actual catalog data
+- **Hallucination guard** — every URL in the response gets validated against the scraped catalog. I also override the LLM's assessment name and test_type with the real values from the catalog using the URL as a lookup key
+- **Retry logic with 25s timeout** — handles Groq rate limits and keeps responses within the evaluator's 30-second timeout
 
 ## What Didn't Work
 
-- **llama-3.1-8b-instant** was too small to reliably follow the JSON schema and behavioral rules — it kept giving generic welcome messages regardless of the user's input
-- **Forced JSON mode (response_format)** with qwen/qwen3.6-27b caused empty responses on Groq — dropped it in favor of prompt-based JSON enforcement with fallback parsing
-- **Single retrieval query from last message only** missed context from earlier turns — fixed by combining full conversation history into the retrieval query
+- **llama-3.1-8b-instant** — too small, kept ignoring the conversation content and giving generic welcome messages
+- **Forced JSON mode** with qwen/qwen3.6-27b returned empty responses on Groq — switched to prompt-based JSON enforcement with fallback parsing instead
+- **Retrieving only from the last message** — missed context from earlier turns, fixed by combining the full conversation into the retrieval query
+- **llama3-70b-8192 and qwen/qwen3.6-27b** — both deprecated or broken on Groq's free tier during development, had to switch models mid-build
 
-## Evaluation Approach
+## Evaluation
 
-The 10 provided sample conversation traces were used in two ways:
+I used the 10 sample conversation traces in two ways:
 
-1. **Few-shot examples** — 6 representative patterns were extracted and embedded directly in the system prompt to teach the model correct behavior
-2. **Local replay testing** — a test script (`test_conversations.py`) replays conversations turn by turn against the live endpoint and prints recommendations at each step, making it easy to spot when the agent clarifies too much, recommends wrong assessments, or fails to set end_of_conversation correctly
+1. Extracted 6 representative patterns and embedded them as few-shot examples directly in the system prompt
+2. Built a test script (`test_conversations.py`) that replays conversations turn by turn against the live endpoint and prints what the agent recommends at each step
 
-Key behaviors tested manually:
-- Agent asks clarifying question for vague queries, recommends immediately when role is given
-- Refinement updates the shortlist without restarting
-- Comparison answers are drawn from catalog data only
-- Off-topic requests are refused
-- All returned URLs exist in the scraped catalog
+Things I tested manually:
+- Vague first message → agent clarifies, doesn't recommend
+- Role given → agent recommends immediately, no unnecessary questions
+- "Add personality tests" → shortlist updates, doesn't restart
+- Comparison question → answer comes from catalog descriptions, not model memory
+- Off-topic request → politely refused
+- All returned URLs verified to exist in the catalog
 
 ## AI Tools Used
 
-Claude was used for code assistance — generating boilerplate, debugging errors, and suggesting prompt improvements. All design decisions (retrieval strategy, prompt structure, schema design, model selection) were made and understood by the developer. The code reflects actual understanding of the system.
+I used Claude for code assistance — boilerplate, debugging errors, and prompt iteration. The design decisions (retrieval strategy, prompt structure, agent behaviors, model selection) were my own. I can defend every part of this in an interview.
