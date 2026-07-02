@@ -5,4 +5,3 @@ __pycache__/
 catalog.index
 catalog.pkl
 GenAI_SampleConversations/
-shl_product_catalog.json
