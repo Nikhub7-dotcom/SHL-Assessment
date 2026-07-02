@@ -72,8 +72,11 @@ def get_test_type(item: dict) -> str:
         "Development & 360": "D",
         "Assessment Exercises": "A",
     }
-    codes = [key_map.get(k, "K") for k in item.get("keys", [])]
-    return ",".join(dict.fromkeys(codes)) or "K"
+    for key in item.get("keys",[]):
+        if key in key_map:
+            return key_map[key]
+        
+    return "K"
 
 
 def format_catalog_context(items: list[dict]) -> str:
