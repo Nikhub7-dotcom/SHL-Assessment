@@ -5,3 +5,4 @@ faiss-cpu
 torch --index-url https://download.pytorch.org/whl/cpu
 groq
 python-dotenv
+python-multipart
